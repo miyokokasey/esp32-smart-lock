@@ -5,188 +5,293 @@ supporting RFID card/fob access, Bluetooth mobile unlock, and Wi-Fi web unlock.
 Engineered with an isolated power rail to prevent MCU brownouts during solenoid
 activation.
 
-![Demo](docs/images/circuit-photo.jpg)
+# ESP32 Smart Lock System
+
+> Dual-authentication embedded access control system — RFID and Wi-Fi HTTP — built on a DOIT ESP32 DevKit V1 with isolated power rail design to prevent MCU brownouts during solenoid actuation.
+
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Platform](https://img.shields.io/badge/platform-ESP32-blue) ![Auth Methods](https://img.shields.io/badge/auth%20methods-2-orange) ![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
+---
+
+## Overview
+
+This project implements a fully functional smart lock system capable of authenticating users through two independent methods: physical RFID card/fob access via an RC522 reader, and an HTTP web interface served directly by the ESP32 over Wi-Fi — accessible from any browser on the same network. The system was designed around real hardware constraints encountered during development, most notably the solenoid inrush current problem that required isolating the lock's power rail from the microcontroller supply.
+
+The build surfaced and resolved several non-trivial hardware and firmware challenges, each documented below as engineering decisions rather than just implementation notes.
 
 ---
 
 ## Features
 
-- **RFID authentication** — 13.56 MHz MIFARE cards and key fobs via RC522 module
-- **Bluetooth unlock** — Classic BT SPP; pair phone and send `UNLOCK` command
-- **Wi-Fi unlock** — ESP32 hosts HTTP server; visit `/unlock` from any browser
-  on the same network
-- **Isolated power rail** — Dedicated 12V supply for solenoid/relay prevents
-  ESP32 brownouts from inrush current spikes
-- **Flyback protection** — 1N4007 diode across solenoid coil clamps inductive
-  kickback voltage
-- **Visual + audio feedback** — Green/red LEDs and buzzer tones for
-  granted/denied access
-- **Multi-card whitelist** — Supports multiple authorized UIDs stored in firmware
+- **Dual authentication** — RFID (RC522 / ISO 14443A) and Wi-Fi HTTP server operate concurrently in a single firmware image
+- **Isolated 12V power rail** — dedicated supply for solenoid and relay prevents ESP32 brownouts from inrush current spikes during actuation
+- **Flyback protection** — 1N4007 diode across solenoid coil clamps inductive kickback voltage spike on relay open
+- **Active-high relay logic** — corrected from default assumption after observing reversed lock behavior; solenoid wired to NO terminal with HIGH = unlock
+- **Multi-card whitelist** — UID array supports N authorized cards; checked via O(n) linear scan per read cycle
+- **Passive buzzer audio feedback** — distinct tones (1000 Hz unlock / 400 Hz deny) via hardware PWM `tone()` on GPIO 27
+- **Graceful Wi-Fi fallback** — if Wi-Fi credentials fail or network is unavailable, RFID authentication remains fully operational independently
+- **Flash partition optimization** — firmware image exceeds default 1.3 MB limit; resolved by switching to Huge APP (3MB No OTA) partition scheme
 
 ---
+
 ## Hardware
 
-| Component | Spec | Purpose |
+| Component | Part / Spec | Notes |
 |---|---|---|
-| ESP32 DevKit V1 | 240 MHz dual-core, 4MB flash | Main controller |
-| RC522 RFID module | 13.56 MHz, SPI, ISO 14443A | Card reader |
-| 5V relay module | Optocoupler-isolated | Switches 12V solenoid circuit |
-| 12V solenoid lock | NC (normally closed) | Physical bolt |
-| 12V 2A DC adapter | 5.5mm barrel jack | Dedicated lock power rail |
-| 1N4007 diode | 1A, 1000V | Flyback protection |
-| Green + red LEDs | 5mm, with 220Ω resistors | Access feedback |
-| Active buzzer | 5V | Audio feedback |
+| Microcontroller | DOIT ESP32 DevKit V1 (ESP32-WROOM-32) | Dual-core 240 MHz, 4MB flash, built-in Wi-Fi |
+| RFID reader | RC522 (MFRC522) — 13.56 MHz, SPI | Power pin labeled `3.3V` on this board variant — not `VCC` |
+| Relay module | 5V, 1-channel, optocoupler-isolated | Active-HIGH on this module; confirmed by behavioral testing |
+| Solenoid lock | 12V DC, normally-closed | NC = bolt extended (locked) when unpowered — safe-fail default |
+| Power supply | 12V 2A DC wall adapter, 5.5mm barrel jack | Dedicated rail for solenoid — isolated from ESP32 USB supply |
+| Barrel jack breakout | 5.5mm × 2.1mm screw terminal adapter | Center pin = positive (+) — verified with multimeter |
+| Flyback diode | 1N4007 | Across solenoid terminals; cathode (banded end) to positive wire |
+| Green LED | 5mm, ~2.1V forward voltage | GPIO 25 via 220Ω resistor |
+| Red LED | 5mm, ~2.1V forward voltage | GPIO 26 via 220Ω resistor |
+| Passive buzzer | 5V piezo | GPIO 27 — `tone()` controls pitch; 1000 Hz grant / 400 Hz deny |
 
-**Estimated total cost: ~$35–45**
+**Estimated build cost: ~$35–45 USD**
 
 ---
 
-## Wiring
-
-### ESP32 → RC522 (SPI — VSPI peripheral)
-
-| RC522 pin | ESP32 GPIO | Notes |
-|---|---|---|
-| VCC | 3.3V | **3.3V only — never 5V** |
-| GND | GND | Common ground |
-| RST | GPIO 22 | Reset line |
-| SDA (SS) | GPIO 5 | SPI chip select |
-| SCK | GPIO 18 | Hardware VSPI clock |
-| MOSI | GPIO 23 | SPI data out |
-| MISO | GPIO 19 | SPI data in |
-
-### ESP32 → relay module
-
-| Relay pin | Connect to | Notes |
-|---|---|---|
-| VCC | ESP32 Vin (5V) | Relay coil power |
-| GND | ESP32 GND | Shared ground |
-| IN | GPIO 32 | Control signal (active low) |
-
-### Relay → solenoid (12V circuit)
-
-| Relay terminal | Connect to |
-|---|---|
-| COM | 12V adapter + (via barrel jack breakout) |
-| NO | Solenoid + wire |
-| Solenoid − | 12V adapter GND (tied to ESP32 GND) |
-
-> **Important:** The 12V adapter GND and ESP32 USB GND must be tied together
-> at a shared ground point. Without a common ground, the solenoid circuit has
-> no return path.
-
-### LEDs and buzzer
-| Component | GPIO | Notes |
-|---|---|---|
-| Green LED | GPIO 25 | Via 220Ω resistor |
-| Red LED | GPIO 26 | Via 220Ω resistor |
-| Buzzer (+) | GPIO 27 | Active buzzer |
-
----
-
-## Software setup
-
-### Prerequisites
-
-- [Arduino IDE 2.x](https://www.arduino.cc/en/software)
-- ESP32 board support package (Espressif)
-- MFRC522 library (GithubCommunity)
-
-### Install ESP32 board support
-
-1. Open Arduino IDE → File → Preferences
-2. Add to "Additional boards manager URLs":
-   ```
-      https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-   ```
-3. Tools → Board Manager → search "esp32" → install **esp32 by Espressif**
-
-### Install MFRC522 library
-
-Sketch → Include Library → Manage Libraries → search **MFRC522** → install
-(by GithubCommunity)
-
-### Upload
-
-1. Select board: **ESP32 Dev Module**
-2. Select correct COM port
-3. Open `src/smart_lock/smart_lock.ino`
-4. Edit lines 16–17 with your Wi-Fi credentials
-5. Upload — hold the BOOT button if the upload fails to connect
-
-### Get your card UIDs
-
-Before setting authorized cards, run the UID scanner sketch in
-`src/smart_lock/smart_lock.ino` with the `UID_SCAN_ONLY` flag set to `true`.
-Open Serial Monitor at **115200 baud**, tap your cards, and note the hex UIDs
-printed. Then update the `authorizedUIDs` array with your values and re-upload.
----
-
-## How it works
-
-### Authentication flow
+## Pin Assignments
 
 ```
-Card tap / BT command / HTTP request
-          ↓
-    Credential check
-     ↙         ↘
-  Match       No match
-    ↓             ↓
-GPIO 32 LOW   GPIO 32 stays HIGH
-Relay closes  Red LED + low buzzer
-12V → solenoid
-Green LED + high beep
-3 second timer
-GPIO 32 HIGH
-Relay opens
-Bolt re-engages
+ESP32 GPIO    Component            Notes
+──────────────────────────────────────────────────────
+GPIO 5        RC522 SDA (SS)       SPI chip select — active low
+GPIO 18       RC522 SCK            Hardware VSPI clock
+GPIO 19       RC522 MISO           SPI data in to ESP32
+GPIO 22       RC522 RST            Reset line — driven by MFRC522 library
+GPIO 23       RC522 MOSI           SPI data out from ESP32
+3V3           RC522 3.3V           3.3V ONLY — 5V will destroy the module
+GND           RC522 GND            Common ground
+
+GPIO 32       Relay IN             Active-HIGH on this module
+Vin (5V)      Relay VCC            USB 5V passthrough — relay coil needs 5V
+GND           Relay GND            Shared ground
+
+GPIO 25       Green LED            Via 220Ω resistor — access granted
+GPIO 26       Red LED              Via 220Ω resistor — access denied
+GPIO 27       Passive buzzer (+)   PWM tone output
 ```
-
-### Power rail isolation (brownout prevention)
-The solenoid's inrush current (~600mA peak) would drop a shared supply below
-the ESP32's brownout threshold (~2.44V), causing a hardware reset mid-operation.
-
-**Solution:** Two completely separate supply rails:
-- **ESP32 rail:** USB 5V → on-board LDO → 3.3V (logic and RC522)
-- **Lock rail:** 12V wall adapter → relay NO contact → solenoid
-
-These rails share only a common GND reference. The ESP32 GPIO only drives
-the relay's optocoupler (microamps), not the coil current.
-
-### SPI communication (ESP32 ↔ RC522)
-
-The RC522 uses SPI (Serial Peripheral Interface) — a synchronous full-duplex
-4-wire protocol. The ESP32 is master; the RC522 is the slave. The hardware VSPI
-peripheral handles clock generation and data framing automatically once
-`SPI.begin()` is called.
 
 ---
 
-## Project structure
+## Wiring Diagram
+
+### 3.3V circuit — ESP32 ↔ RC522 (SPI)
+
+```
+ESP32                    RC522
+─────                    ─────
+3V3      ────────────►   3.3V      ← STRICTLY 3.3V — never 5V
+GND      ────────────►   GND
+GPIO 22  ────────────►   RST
+GPIO 5   ────────────►   SDA (SS)
+GPIO 18  ────────────►   SCK
+GPIO 23  ────────────►   MOSI
+GPIO 19  ◄────────────   MISO
+                         IRQ       ← not connected
+```
+
+### 5V circuit — ESP32 → relay module
+
+```
+ESP32 Vin (5V)  ────────►  Relay VCC
+ESP32 GND       ────────►  Relay GND
+GPIO 32         ────────►  Relay IN     ← HIGH = relay ON (active-high)
+```
+
+### 12V circuit — relay → solenoid (isolated rail)
+
+```
+[12V adapter +] → barrel jack (+) → Relay COM
+                                          │
+                                     Relay NO ──► Solenoid (+) red wire
+                                                          │
+                               1N4007 diode (cathode/band → this side)
+                                                          │
+[12V adapter −] → barrel jack (−) → Shared GND ◄── Solenoid (−) black wire
+                                          ↑
+                                    ESP32 GND also ties here
+```
+
+> **Critical:** Both the 12V adapter negative and ESP32 GND must share one common ground rail. Without this shared reference the solenoid circuit has no return path.
+
+---
+
+## Software
+
+### Dependencies
+
+| Library | Source | Purpose |
+|---|---|---|
+| `SPI.h` | ESP32 Arduino core (built-in) | SPI hardware peripheral for RC522 |
+| `MFRC522.h` | GithubCommunity / miguelbalboa — Library Manager | RC522 register-level abstraction |
+| `WiFi.h` | ESP32 Arduino core (built-in) | 802.11 b/g/n station mode |
+| `WebServer.h` | ESP32 Arduino core (built-in) | HTTP server on port 80 |
+
+### Arduino IDE Setup
+
+1. **Add ESP32 board URL** — File → Preferences → Additional boards manager URLs:
+   ```
+   https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+   ```
+
+2. **Install board package** — Tools → Board Manager → search `esp32` → install **esp32 by Espressif Systems**
+
+3. **Install MFRC522** — Sketch → Include Library → Manage Libraries → search `MFRC522` → install by GithubCommunity
+
+4. **Board selection** — Tools → Board → **ESP32 Dev Module**
+   > Note: Select `ESP32 Dev Module`, not `DOIT ESP32 DEVKIT V1`. The DevKit V1 profile hides the Partition Scheme menu. Both profiles target identical hardware — the board selection only affects available IDE options.
+
+5. **Partition scheme** — Tools → Partition Scheme → **Huge APP (3MB No OTA)**
+   > Required: the combined Wi-Fi + RFID firmware exceeds the default 1.3 MB flash code partition. Huge APP expands it to ~3 MB within the same 4 MB flash chip — no hardware change needed.
+
+6. **Upload note** — if upload fails with `Wrong boot mode detected`, hold the **BOOT** button on the ESP32 while clicking Upload, release when the progress percentage begins incrementing.
+
+### Configuration
+
+Before uploading, update these two items in the sketch:
+
+```cpp
+// Wi-Fi credentials
+const char* WIFI_SSID = "YourNetworkName";
+const char* WIFI_PASS = "YourPassword";
+
+// Authorized card UIDs — scan with uid_scanner sketch first, then paste here
+byte authorizedUIDs[][4] = {
+  {0x75, 0x5C, 0x44, 0xE0},   // Card 1
+  {0x8A, 0x51, 0xD4, 0x35}    // Card 2 / key fob
+};
+```
+
+To read a card's UID: upload `src/uid_scanner/uid_scanner.ino`, open Serial Monitor at **115200 baud**, and tap the card. The 4 hex bytes are printed directly — prefix each with `0x` when entering into the array.
+
+---
+
+## Authentication Flow
+
+```
+Card tap ───┐
+            ├──► Credential check
+HTTP /unlock ┘         │
+                ┌──────┴───────┐
+              match         no match
+                │               │
+         GPIO 32 HIGH    GPIO 32 stays LOW
+         Relay closes    Red LED on
+         12V → solenoid  Low tone (400 Hz, 400 ms)
+         Green LED on    1 second delay, LED off
+         High tone
+         (1000 Hz, 200 ms)
+         3 second timer
+         GPIO 32 LOW
+         Relay opens
+         Bolt re-engages
+```
+
+---
+
+## Engineering Challenges and Resolutions
+
+### 1. ESP32 brownout on relay activation
+
+**Problem:** The ESP32 reset randomly every time the solenoid was triggered. Serial Monitor disconnected mid-operation with no error message.
+
+**Root cause:** The relay coil's inrush current (~600 mA peak) caused a voltage droop on the shared supply rail, dropping VDD below the ESP32's hardware brownout threshold (~2.44 V). The brownout detector triggered a hard reset before the unlock sequence could complete.
+
+**Resolution:** Separated the solenoid and relay onto a dedicated 12V wall adapter rail, completely isolated from the ESP32's USB/3.3V supply. The two rails share only a common GND reference. The ESP32 GPIO only drives the relay module's optocoupler — a microamp-level signal — not the coil current. A 1N4007 flyback diode across the solenoid terminals clamps the inductive voltage spike when the relay de-energizes.
+
+---
+
+### 2. Relay logic inversion
+
+**Problem:** On first upload, the solenoid retracted continuously at idle and released when a valid card was scanned — completely reversed from intended behavior.
+
+**Root cause:** The relay module uses active-HIGH logic on this specific board variant (not the more common active-LOW), and the solenoid was connected to the NO (normally open) terminal.
+
+**Resolution:** Confirmed behavior by uploading an isolated relay test sketch. Inverted the GPIO logic in firmware: `HIGH` = relay ON = unlock, `LOW` = relay OFF = locked. The initial pin state in `setup()` is set to `LOW` before any other code runs, ensuring the door is locked on every power-up.
+
+---
+
+### 3. RC522 interference from conductive desk surface
+
+**Problem:** RFID reads were intermittent or non-functional when the RC522 module rested flat on the work surface, but fully reliable when held in the air.
+
+**Root cause:** The desk surface created capacitive loading on the antenna traces and eddy current damping of the 13.56 MHz magnetic field from the reader coil. The bare solder contacts on the module underside also created partial shorts through surface conductance, altering the antenna's resonant characteristics.
+
+**Resolution:** Elevated the RC522 on a non-conductive standoff (cardboard during prototyping). In a production enclosure, mounting inside a plastic housing permanently isolates the underside contacts and eliminates the interference path.
+
+---
+
+### 4. Firmware size exceeding flash partition limit
+
+**Problem:** Compilation error — `text section exceeds available space in board` — with the combined Wi-Fi + WebServer + MFRC522 firmware image exceeding the 1.3 MB default code partition.
+
+**Resolution:** Changed Tools → Partition Scheme to **Huge APP (3MB No OTA)**, reallocating the 4 MB flash chip to provide ~3 MB for the code partition instead of ~1.3 MB. No hardware change required. The `Partition Scheme` menu is only visible when `ESP32 Dev Module` is selected as the board — it is hidden under the `DOIT ESP32 DEVKIT V1` profile.
+
+---
+
+### 5. HTML string compilation errors in web handler
+
+**Problem:** Multi-line HTML strings inside `server.send()` caused `missing terminating " character` compiler errors when strings wrapped across lines in the IDE.
+
+**Resolution:** Replaced concatenated C-style string literals with C++ raw string literals (`R"HTML(...)HTML"`), which treat the entire enclosed block as raw text and eliminate all per-line quotation mark requirements.
+
+---
+
+## Known Limitations and Future Work
+
+| Limitation | Impact | Planned Fix |
+|---|---|---|
+| UID-only RFID authentication | UIDs are clonable with cheap RFID writers (~$5) | Migrate to MIFARE DESFire EV2 with AES-128 challenge-response |
+| Plain HTTP (no TLS) | Unlock commands transmitted in cleartext on LAN | Add HTTPS with self-signed TLS certificate |
+| Blocking `delay()` in unlock sequence | Main loop frozen for 3 seconds — no new HTTP requests served | Replace with `millis()`-based non-blocking state machine |
+| Wi-Fi credentials hardcoded in firmware | Password visible in source code | Store credentials in ESP32 NVS via a first-boot provisioning flow |
+| Single network dependency | Lock unreachable if router goes offline | Add local-only fallback mode or MQTT with offline queue |
+
+---
+
+## Project Structure
 
 ```
 esp32-smart-lock/
-├── src/smart_lock/smart_lock.ino   Main Arduino sketch
+├── src/
+│   ├── smart_lock/
+│   │   └── smart_lock.ino        Main firmware — RFID + Wi-Fi
+│   └── uid_scanner/
+│       └── uid_scanner.ino       Utility — prints card UID to Serial Monitor
 ├── docs/
-│   ├── wiring-diagram.md           Detailed wiring reference
-│   └── system-architecture.md      System design explanation
+│   ├── wiring-diagram.md         Full wiring reference with circuit explanation
+│   ├── system-architecture.md    Design decisions and state machine
+│   └── images/
+│       └── circuit-photo.jpg     Build photo
 ├── hardware/
-│   └── bill-of-materials.md        Parts list with prices
+│   └── bill-of-materials.md      Parts list with prices and search terms
+├── .gitignore
+├── LICENSE
 └── README.md
 ```
 
 ---
 
-## Known limitations and future improvements
+## Usage
 
-- **UID-only RFID auth** is cloneable with cheap card writers. Production
-  systems should use MIFARE DESFire with AES-128 challenge-response.
-- **Plain HTTP** for the web interface. Production would use HTTPS with TLS.
-- **Blocking `delay()`** in unlock function pauses all processing for 3s.
-  Replace with `millis()`-based non-blocking timing for production.
-- **Credentials in firmware** — Wi-Fi password is hardcoded. Should use
-  ESP32 NVS (non-volatile storage) or a provisioning flow.
+### RFID unlock
+
+Hold your authorized MIFARE card or key fob flat against the RC522 antenna coil (the large square loop on the module) within ~3–5 cm. On a valid read: green LED on, 1000 Hz beep, solenoid retracts. Re-locks automatically after 3 seconds. On an invalid card: red LED on, 400 Hz tone, solenoid stays locked.
+
+> If reads are intermittent, ensure the module is not resting on a conductive surface — elevate it on cardboard or plastic.
+
+### Wi-Fi unlock
+
+1. Ensure your phone and the ESP32 are on the same Wi-Fi network
+2. Open Serial Monitor at 115200 baud after boot — the assigned IP prints as: `IP: 192.168.x.x`
+3. Open a browser on your phone and navigate to `http://[IP-address]`
+4. Tap **Unlock Door** — the page confirms unlock and the solenoid retracts
+
+> If the page does not load, confirm cellular data is off and the phone is connected to Wi-Fi. Some routers block device-to-device communication (AP isolation) — switching to a phone hotspot works around this.
 
 ---
 
@@ -194,6 +299,14 @@ esp32-smart-lock/
 
 MIT — see [LICENSE](LICENSE)
 
+---
+
+## Author
+
+**[Your Name]**
+[your-email@email.com] · [LinkedIn URL] · [GitHub profile]
+
+*Electrical Engineering / Computer Engineering — [Your University], [Year]*
 ---
 
 ## Author
