@@ -5,12 +5,6 @@ supporting RFID card/fob access, Bluetooth mobile unlock, and Wi-Fi web unlock.
 Engineered with an isolated power rail to prevent MCU brownouts during solenoid
 activation.
 
-# ESP32 Smart Lock System
-
-> Dual-authentication embedded access control system — RFID and Wi-Fi HTTP — built on a DOIT ESP32 DevKit V1 with isolated power rail design to prevent MCU brownouts during solenoid actuation.
-
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Platform](https://img.shields.io/badge/platform-ESP32-blue) ![Auth Methods](https://img.shields.io/badge/auth%20methods-2-orange) ![License](https://img.shields.io/badge/license-MIT-lightgrey)
-
 ---
 
 ## Overview
@@ -241,18 +235,6 @@ HTTP /unlock ┘         │
 
 ---
 
-## Known Limitations and Future Work
-
-| Limitation | Impact | Planned Fix |
-|---|---|---|
-| UID-only RFID authentication | UIDs are clonable with cheap RFID writers (~$5) | Migrate to MIFARE DESFire EV2 with AES-128 challenge-response |
-| Plain HTTP (no TLS) | Unlock commands transmitted in cleartext on LAN | Add HTTPS with self-signed TLS certificate |
-| Blocking `delay()` in unlock sequence | Main loop frozen for 3 seconds — no new HTTP requests served | Replace with `millis()`-based non-blocking state machine |
-| Wi-Fi credentials hardcoded in firmware | Password visible in source code | Store credentials in ESP32 NVS via a first-boot provisioning flow |
-| Single network dependency | Lock unreachable if router goes offline | Add local-only fallback mode or MQTT with offline queue |
-
----
-
 ## Project Structure
 
 ```
@@ -301,14 +283,9 @@ MIT — see [LICENSE](LICENSE)
 
 ---
 
-## Author
-
-**[Your Name]**
-[your-email@email.com] · [LinkedIn URL] · [GitHub profile]
-
-*Electrical Engineering / Computer Engineering — [Your University], [Year]*
+*Electrical Engineering — [University of California Sna Diego], [2026]*
 ---
 
 ## Author
 
-[Kasey Miyoko] — [kaseymiyoko@email.com] — [linkedin.com/in/kasey-miyoko]
+[Kasey Miyoko] — [kaseymiyoko@email.com] — [www.linkedin.com/in/kasey-miyoko]
